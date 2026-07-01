@@ -1,0 +1,13 @@
+# 파이썬 / OS
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.env
+
+# DB / 런타임 산출물
+*.db
+vms/static/hls/*
+vms/recordings/*
+!vms/static/hls/.gitkeep
+!vms/recordings/.gitkeep

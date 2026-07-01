@@ -1,0 +1,6 @@
+flask>=3.0
+opencv-python>=4.8
+ultralytics>=8.4
+torch>=2.0
+python-dotenv>=1.0
+# ffmpeg 는 시스템 패키지 (Dockerfile에서 설치)

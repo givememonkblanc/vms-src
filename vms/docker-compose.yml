@@ -1,0 +1,12 @@
+services:
+  vms:
+    build: .
+    ports: ["8000:8000"]
+    env_file: [.env]
+    volumes:
+      - ./static/hls:/app/static/hls     # HLS 세그먼트
+      - ./recordings:/app/recordings     # 녹화 보관
+      - ./vms.db:/app/vms.db
+    restart: unless-stopped
+    # GPU 검출 시(NVIDIA):
+    # deploy: {resources: {reservations: {devices: [{capabilities: ["gpu"]}]}}}

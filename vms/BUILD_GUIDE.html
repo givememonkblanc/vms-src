@@ -1,0 +1,765 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>VMS 단계별 빌드 가이드</title>
+<style>
+body{background:#f6f9f5;color:#1f2a24;font-family:"Pretendard","Malgun Gothic",system-ui,sans-serif;margin:0;padding:34px;line-height:1.6;}
+.wrap{max-width:980px;margin:0 auto;}
+h1{color:#1b5e20;} .intro{color:#5b6b62;margin-bottom:8px;}
+section{background:#fff;border:1px solid #d7e3da;border-radius:14px;padding:20px 24px;margin:18px 0;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+h2{color:#1b5e20;font-size:21px;margin:0 0 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.sid{background:#2e7d32;color:#fff;border-radius:8px;padding:2px 11px;font-size:15px;}
+.sl{font-size:13px;color:#5b6b62;font-weight:500;background:#e8f5e9;padding:2px 9px;border-radius:999px;}
+.what{color:#1f2a24;margin:6px 0;}
+.vibe{background:#efeaff;border:1px solid #d9cefb;border-radius:9px;padding:9px 13px;color:#5b30d6;font-size:14px;margin:10px 0;}
+.fn{font-family:"D2Coding",monospace;background:#37474f;color:#fff;display:inline-block;font-size:12px;padding:3px 11px;border-radius:7px 7px 0 0;margin-top:14px;}
+pre{background:#1e2b24;color:#e6f0e9;border-radius:0 10px 10px 10px;padding:16px 18px;overflow-x:auto;font-family:"D2Coding","Fira Code",Consolas,monospace;font-size:12.5px;line-height:1.55;margin:0;}
+code{font-family:inherit;}
+</style></head><body><div class="wrap">
+<h1>🛠️ VMS 단계별 빌드 가이드</h1>
+<p class="intro">슬라이드(CH2)의 각 개념을 <b>바이브 코딩으로 만들 때 나오는 실제 소스코드</b>. 위에서부터 만들면 VMS 완성.</p>
+<p class="intro">실행: <code>pip install -r requirements.txt</code> (+ ffmpeg) → <code>python app.py</code> → http://localhost:8000</p>
+<section><h2><span class="sid">STEP 1</span> Flask 앱 구조 <span class="sl">📊 슬라이드 20</span></h2><p class="what">create_app()으로 앱 뼈대 + 설정·DB·블루프린트 등록</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “아키텍처·기능정의서대로 Flask App Factory와 블루프린트 뼈대를 만들어줘”</div><div class="fn">app/config.py</div><pre><code>&quot;&quot;&quot;VMS 설정 — .env에서 로드.&quot;&quot;&quot;
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE = Path(__file__).resolve().parent.parent
+
+
+class Config:
+    DEBUG = os.getenv(&quot;FLASK_DEBUG&quot;, &quot;true&quot;).lower() == &quot;true&quot;
+    PORT = int(os.getenv(&quot;PORT&quot;, &quot;8000&quot;))
+
+    # HLS / 녹화 저장 경로
+    HLS_DIR = str(BASE / &quot;static&quot; / &quot;hls&quot;)
+    REC_DIR = str(BASE / &quot;recordings&quot;)
+    HLS_TIME = int(os.getenv(&quot;HLS_TIME&quot;, &quot;2&quot;))          # 세그먼트 길이(초)
+    HLS_LIST_SIZE = int(os.getenv(&quot;HLS_LIST_SIZE&quot;, &quot;6&quot;))
+
+    # 객체 검출 (YOLO)
+    DETECTOR_WEIGHTS = os.getenv(&quot;DETECTOR_WEIGHTS&quot;, &quot;yolo11n.pt&quot;)
+    DETECT_CLASSES = [int(x) for x in os.getenv(&quot;DETECT_CLASSES&quot;, &quot;0,2&quot;).split(&quot;,&quot;)]  # person,car
+    DETECT_CONF = float(os.getenv(&quot;DETECT_CONF&quot;, &quot;0.4&quot;))
+    FRAME_SKIP = int(os.getenv(&quot;FRAME_SKIP&quot;, &quot;15&quot;))
+    DEVICE = os.getenv(&quot;DEVICE&quot;) or None
+
+    REC_SEGMENT_TIME = int(os.getenv(&quot;REC_SEGMENT_TIME&quot;, &quot;60&quot;))   # 녹화 파일 1개 길이(초)
+
+    DB_PATH = os.getenv(&quot;DB_PATH&quot;, str(BASE / &quot;vms.db&quot;))</code></pre><div class="fn">app/db.py</div><pre><code>&quot;&quot;&quot;VMS SQLite — cameras / recordings / detections / event_rules / events.&quot;&quot;&quot;
+import json
+import os
+import sqlite3
+from datetime import datetime
+
+DB_PATH = os.getenv(&quot;DB_PATH&quot;, &quot;vms.db&quot;)
+
+
+def _conn():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def now():
+    return datetime.now().isoformat(timespec=&quot;seconds&quot;)
+
+
+def init_db():
+    with _conn() as c:
+        c.executescript(
+            &quot;&quot;&quot;
+            CREATE TABLE IF NOT EXISTS cameras (
+                camera_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                rtsp_url   TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT &#x27;offline&#x27;,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS recordings (
+                rec_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                camera_id  INTEGER NOT NULL,
+                file_path  TEXT NOT NULL UNIQUE,
+                start_time TEXT NOT NULL,
+                end_time   TEXT
+            );
+            CREATE TABLE IF NOT EXISTS detections (
+                det_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                camera_id  INTEGER NOT NULL,
+                label      TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                bbox       TEXT NOT NULL,
+                ts         TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS event_rules (
+                rule_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                camera_id      INTEGER NOT NULL,
+                object         TEXT NOT NULL,
+                min_confidence REAL NOT NULL DEFAULT 0.5,
+                cooldown_sec   INTEGER NOT NULL DEFAULT 30,
+                enabled        INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                event_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                camera_id  INTEGER NOT NULL,
+                rule_id    INTEGER,
+                label      TEXT NOT NULL,
+                confidence REAL,
+                snapshot   TEXT,
+                ts         TEXT NOT NULL,
+                acked      INTEGER NOT NULL DEFAULT 0
+            );
+            &quot;&quot;&quot;
+        )
+
+
+# ---------- cameras ----------
+def add_camera(name, rtsp_url):
+    with _conn() as c:
+        return c.execute(&quot;INSERT INTO cameras (name, rtsp_url, status, created_at) VALUES (?,?,?,?)&quot;,
+                         (name, rtsp_url, &quot;offline&quot;, now())).lastrowid
+
+
+def list_cameras():
+    with _conn() as c:
+        return [dict(r) for r in c.execute(&quot;SELECT * FROM cameras ORDER BY camera_id&quot;).fetchall()]
+
+
+def get_camera(cid):
+    with _conn() as c:
+        r = c.execute(&quot;SELECT * FROM cameras WHERE camera_id=?&quot;, (cid,)).fetchone()
+        return dict(r) if r else None
+
+
+def set_status(cid, status):
+    with _conn() as c:
+        c.execute(&quot;UPDATE cameras SET status=? WHERE camera_id=?&quot;, (status, cid))
+
+
+# ---------- recordings ----------
+def register_recording(camera_id, file_path, start_time, end_time=None):
+    with _conn() as c:
+        c.execute(&quot;INSERT OR IGNORE INTO recordings (camera_id,file_path,start_time,end_time)&quot;
+                  &quot; VALUES (?,?,?,?)&quot;, (camera_id, file_path, start_time, end_time))
+
+
+def list_recordings(camera_id=None, start=None, end=None):
+    q, p = &quot;SELECT * FROM recordings&quot;, []
+    where = []
+    if camera_id:
+        where.append(&quot;camera_id=?&quot;); p.append(camera_id)
+    if start:
+        where.append(&quot;start_time&gt;=?&quot;); p.append(start)
+    if end:
+        where.append(&quot;start_time&lt;=?&quot;); p.append(end)
+    if where:
+        q += &quot; WHERE &quot; + &quot; AND &quot;.join(where)
+    q += &quot; ORDER BY start_time DESC&quot;
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q, p).fetchall()]
+
+
+# ---------- detections ----------
+def insert_detection(cid, label, conf, bbox):
+    with _conn() as c:
+        c.execute(&quot;INSERT INTO detections (camera_id,label,confidence,bbox,ts) VALUES (?,?,?,?,?)&quot;,
+                  (cid, label, conf, json.dumps(bbox), now()))
+
+
+def recent_detections(cid, limit=20):
+    with _conn() as c:
+        rows = c.execute(&quot;SELECT * FROM detections WHERE camera_id=? ORDER BY det_id DESC LIMIT ?&quot;,
+                         (cid, limit)).fetchall()
+    return [{**dict(r), &quot;bbox&quot;: json.loads(r[&quot;bbox&quot;])} for r in rows]
+
+
+# ---------- rules ----------
+def add_rule(cid, obj, min_conf=0.5, cooldown=30):
+    with _conn() as c:
+        return c.execute(&quot;INSERT INTO event_rules (camera_id,object,min_confidence,cooldown_sec) VALUES (?,?,?,?)&quot;,
+                         (cid, obj, min_conf, cooldown)).lastrowid
+
+
+def get_rules(cid):
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            &quot;SELECT * FROM event_rules WHERE camera_id=? AND enabled=1&quot;, (cid,)).fetchall()]
+
+
+def all_rules():
+    with _conn() as c:
+        return [dict(r) for r in c.execute(&quot;SELECT * FROM event_rules ORDER BY rule_id&quot;).fetchall()]
+
+
+# ---------- events ----------
+def insert_event(cid, rule_id, label, conf, snapshot):
+    with _conn() as c:
+        return c.execute(&quot;INSERT INTO events (camera_id,rule_id,label,confidence,snapshot,ts) VALUES (?,?,?,?,?,?)&quot;,
+                         (cid, rule_id, label, conf, snapshot, now())).lastrowid
+
+
+def list_events(limit=50, camera_id=None):
+    q = &quot;SELECT * FROM events&quot;
+    p = []
+    if camera_id:
+        q += &quot; WHERE camera_id=?&quot;; p.append(camera_id)
+    q += &quot; ORDER BY event_id DESC LIMIT ?&quot;; p.append(limit)
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q, p).fetchall()]
+
+
+def ack_event(eid):
+    with _conn() as c:
+        c.execute(&quot;UPDATE events SET acked=1 WHERE event_id=?&quot;, (eid,))</code></pre><div class="fn">app/__init__.py</div><pre><code>&quot;&quot;&quot;VMS App Factory — 카메라·스트림·검출·이벤트 + 웹 대시보드.&quot;&quot;&quot;
+import os
+
+from flask import Flask
+
+from . import db
+from .config import BASE, Config
+from .routes.cameras import cameras_bp
+from .routes.detection import detection_bp
+from .routes.events import events_bp
+from .routes.health import health_bp
+from .routes.recordings import recordings_bp
+from .routes.stream import stream_bp
+from .routes.web import web_bp
+
+
+def create_app() -&gt; Flask:
+    app = Flask(
+        __name__,
+        static_folder=str(BASE / &quot;static&quot;), static_url_path=&quot;/static&quot;,
+        template_folder=str(BASE / &quot;templates&quot;),
+    )
+    app.config.from_object(Config)
+    os.makedirs(app.config[&quot;HLS_DIR&quot;], exist_ok=True)
+    os.makedirs(app.config[&quot;REC_DIR&quot;], exist_ok=True)
+    db.init_db()
+
+    app.register_blueprint(web_bp)                                   # /
+    app.register_blueprint(cameras_bp, url_prefix=&quot;/api/cameras&quot;)
+    app.register_blueprint(stream_bp, url_prefix=&quot;/api/stream&quot;)
+    app.register_blueprint(recordings_bp, url_prefix=&quot;/api/recordings&quot;)
+    app.register_blueprint(detection_bp, url_prefix=&quot;/api/detection&quot;)
+    app.register_blueprint(events_bp, url_prefix=&quot;/api/events&quot;)
+    app.register_blueprint(health_bp, url_prefix=&quot;/api/health&quot;)
+    return app</code></pre><div class="fn">app/routes/health.py</div><pre><code>&quot;&quot;&quot;헬스체크.&quot;&quot;&quot;
+from flask import Blueprint, jsonify
+
+from .. import db
+
+health_bp = Blueprint(&quot;health&quot;, __name__)
+
+
+@health_bp.get(&quot;/&quot;)
+def health():
+    return jsonify({&quot;status&quot;: &quot;healthy&quot;, &quot;cameras&quot;: len(db.list_cameras())})</code></pre><div class="fn">app.py</div><pre><code>&quot;&quot;&quot;엔트리포인트 — create_app()으로 앱 생성 후 실행.
+
+  python app.py            # http://0.0.0.0:8000
+포트는 .env(PORT)로 관리 → docker-compose 매핑과 반드시 일치시킨다.
+&quot;&quot;&quot;
+from app import create_app
+
+flask_app = create_app()
+
+if __name__ == &quot;__main__&quot;:
+    port = flask_app.config[&quot;PORT&quot;]
+    flask_app.run(host=&quot;0.0.0.0&quot;, port=port, debug=flask_app.config[&quot;DEBUG&quot;],
+                  use_reloader=False)</code></pre></section><section><h2><span class="sid">STEP 2</span> RTSP → HLS 스트리밍 <span class="sl">📊 슬라이드 21</span></h2><p class="what">ffmpeg로 RTSP를 HLS로 변환해 브라우저 재생</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “RTSP를 ffmpeg로 HLS로 변환하는 hls_service와 /api/stream 라우터를 만들어줘”</div><div class="fn">app/services/hls_service.py</div><pre><code>&quot;&quot;&quot;RTSP → HLS 변환 — 카메라별 ffmpeg 프로세스 관리.&quot;&quot;&quot;
+import os
+import subprocess
+
+_procs = {}   # camera_id -&gt; Popen
+
+
+def _build_cmd(source, m3u8, seg_time, list_size):
+    inp = [&quot;-rtsp_transport&quot;, &quot;tcp&quot;, &quot;-i&quot;, source] if source.startswith(&quot;rtsp&quot;) \
+        else [&quot;-stream_loop&quot;, &quot;-1&quot;, &quot;-re&quot;, &quot;-i&quot;, source]   # 파일은 반복 재생(데모)
+    return [&quot;ffmpeg&quot;, &quot;-y&quot;, *inp,
+            &quot;-c:v&quot;, &quot;libx264&quot;, &quot;-preset&quot;, &quot;veryfast&quot;, &quot;-tune&quot;, &quot;zerolatency&quot;,
+            # 세그먼트 경계마다 키프레임 강제 → 첫 세그먼트가 제때 닫힘
+            &quot;-force_key_frames&quot;, f&quot;expr:gte(t,n_forced*{seg_time})&quot;,
+            &quot;-an&quot;, &quot;-f&quot;, &quot;hls&quot;,
+            &quot;-hls_time&quot;, str(seg_time), &quot;-hls_list_size&quot;, str(list_size),
+            &quot;-hls_flags&quot;, &quot;delete_segments&quot;, m3u8]
+
+
+def start(camera_id, source, hls_dir, seg_time=2, list_size=6):
+    cid = str(camera_id)
+    p = _procs.get(cid)
+    if p and p.poll() is None:
+        return f&quot;/static/hls/{cid}/index.m3u8&quot;
+    out_dir = os.path.join(hls_dir, cid)
+    os.makedirs(out_dir, exist_ok=True)
+    m3u8 = os.path.join(out_dir, &quot;index.m3u8&quot;)
+    _procs[cid] = subprocess.Popen(_build_cmd(source, m3u8, seg_time, list_size),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return f&quot;/static/hls/{cid}/index.m3u8&quot;
+
+
+def stop(camera_id):
+    cid = str(camera_id)
+    p = _procs.pop(cid, None)
+    if p and p.poll() is None:
+        p.terminate()
+
+
+def is_running(camera_id):
+    p = _procs.get(str(camera_id))
+    return bool(p and p.poll() is None)</code></pre><div class="fn">app/routes/stream.py</div><pre><code>&quot;&quot;&quot;스트리밍 라우터 — 카메라 RTSP를 HLS로 변환 시작/중지. (.m3u8/.ts는 /static/hls/ 로 제공)&quot;&quot;&quot;
+from flask import Blueprint, current_app, jsonify
+
+from .. import db
+from ..services import hls_service
+
+stream_bp = Blueprint(&quot;stream&quot;, __name__)
+
+
+@stream_bp.post(&quot;/&lt;int:cid&gt;/start&quot;)
+def start(cid):
+    cam = db.get_camera(cid)
+    if not cam:
+        return jsonify({&quot;error&quot;: &quot;카메라 없음&quot;}), 404
+    cfg = current_app.config
+    url = hls_service.start(cid, cam[&quot;rtsp_url&quot;], cfg[&quot;HLS_DIR&quot;],
+                            cfg[&quot;HLS_TIME&quot;], cfg[&quot;HLS_LIST_SIZE&quot;])
+    db.set_status(cid, &quot;online&quot;)
+    return jsonify({&quot;camera_id&quot;: cid, &quot;hls_url&quot;: url})
+
+
+@stream_bp.post(&quot;/&lt;int:cid&gt;/stop&quot;)
+def stop(cid):
+    hls_service.stop(cid)
+    db.set_status(cid, &quot;offline&quot;)
+    return jsonify({&quot;camera_id&quot;: cid, &quot;stopped&quot;: True})</code></pre></section><section><h2><span class="sid">STEP 3</span> 영상 관리 — 카메라·녹화·재생 <span class="sl">📊 슬라이드 22</span></h2><p class="what">카메라 CRUD + 세그먼트 녹화 + 기간 검색·재생</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “카메라 CRUD와, ffmpeg 세그먼트로 녹화해 기간으로 검색·재생하는 recordings API를 만들어줘”</div><div class="fn">app/routes/cameras.py</div><pre><code>&quot;&quot;&quot;카메라 관리 라우터.&quot;&quot;&quot;
+from flask import Blueprint, jsonify, request
+
+from .. import db
+
+cameras_bp = Blueprint(&quot;cameras&quot;, __name__)
+
+
+@cameras_bp.get(&quot;&quot;)
+@cameras_bp.get(&quot;/&quot;)
+def list_cameras():
+    return jsonify({&quot;cameras&quot;: db.list_cameras()})
+
+
+@cameras_bp.post(&quot;&quot;)
+@cameras_bp.post(&quot;/&quot;)
+def add_camera():
+    b = request.get_json(silent=True) or {}
+    if not b.get(&quot;name&quot;) or not b.get(&quot;rtsp_url&quot;):
+        return jsonify({&quot;error&quot;: &quot;name, rtsp_url 필요&quot;}), 400
+    cid = db.add_camera(b[&quot;name&quot;], b[&quot;rtsp_url&quot;])
+    return jsonify(db.get_camera(cid)), 201
+
+
+@cameras_bp.get(&quot;/&lt;int:cid&gt;&quot;)
+def get_camera(cid):
+    cam = db.get_camera(cid)
+    return (jsonify(cam), 200) if cam else (jsonify({&quot;error&quot;: &quot;not found&quot;}), 404)</code></pre><div class="fn">app/services/recording_service.py</div><pre><code>&quot;&quot;&quot;녹화 — ffmpeg 세그먼트 muxer로 영상을 타임스탬프 mp4 파일로 저장.&quot;&quot;&quot;
+import glob
+import os
+import re
+import subprocess
+from datetime import datetime, timedelta
+
+from .. import db
+
+_procs = {}   # camera_id -&gt; Popen
+_NAME = re.compile(r&quot;(\d{8})_(\d{6})\.mp4$&quot;)
+
+
+def start_recording(camera_id, source, rec_dir, segment_time=60):
+    cid = str(camera_id)
+    p = _procs.get(cid)
+    if p and p.poll() is None:
+        return
+    out = os.path.join(rec_dir, cid)
+    os.makedirs(out, exist_ok=True)
+    inp = [&quot;-rtsp_transport&quot;, &quot;tcp&quot;, &quot;-i&quot;, source] if str(source).startswith(&quot;rtsp&quot;) else [&quot;-i&quot;, source]
+    pattern = os.path.join(out, &quot;%Y%m%d_%H%M%S.mp4&quot;)
+    cmd = [&quot;ffmpeg&quot;, &quot;-y&quot;, *inp, &quot;-c&quot;, &quot;copy&quot;, &quot;-f&quot;, &quot;segment&quot;,
+           &quot;-segment_time&quot;, str(segment_time), &quot;-reset_timestamps&quot;, &quot;1&quot;,
+           &quot;-strftime&quot;, &quot;1&quot;, pattern]
+    _procs[cid] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def stop_recording(camera_id):
+    p = _procs.pop(str(camera_id), None)
+    if p and p.poll() is None:
+        p.terminate()
+
+
+def is_recording(camera_id):
+    p = _procs.get(str(camera_id))
+    return bool(p and p.poll() is None)
+
+
+def scan_and_register(camera_id, rec_dir, segment_time=60):
+    &quot;&quot;&quot;디스크의 녹화 파일을 DB에 등록(파일명 타임스탬프 → start/end).&quot;&quot;&quot;
+    out = os.path.join(rec_dir, str(camera_id))
+    for f in sorted(glob.glob(os.path.join(out, &quot;*.mp4&quot;))):
+        m = _NAME.search(os.path.basename(f))
+        if not m:
+            continue
+        start = datetime.strptime(m.group(1) + m.group(2), &quot;%Y%m%d%H%M%S&quot;)
+        end = start + timedelta(seconds=segment_time)
+        name = os.path.basename(f)
+        db.register_recording(camera_id, f&quot;/api/recordings/file/{camera_id}/{name}&quot;,
+                              start.isoformat(timespec=&quot;seconds&quot;),
+                              end.isoformat(timespec=&quot;seconds&quot;))</code></pre><div class="fn">app/routes/recordings.py</div><pre><code>&quot;&quot;&quot;녹화 라우터 — 녹화 시작/중지 + 기간 검색 + 재생 파일 제공.&quot;&quot;&quot;
+import os
+
+from flask import Blueprint, current_app, jsonify, request, send_from_directory
+
+from .. import db
+from ..services import recording_service
+
+recordings_bp = Blueprint(&quot;recordings&quot;, __name__)
+
+
+@recordings_bp.post(&quot;/&lt;int:cid&gt;/start&quot;)
+def start(cid):
+    cam = db.get_camera(cid)
+    if not cam:
+        return jsonify({&quot;error&quot;: &quot;카메라 없음&quot;}), 404
+    cfg = current_app.config
+    recording_service.start_recording(cid, cam[&quot;rtsp_url&quot;], cfg[&quot;REC_DIR&quot;], cfg[&quot;REC_SEGMENT_TIME&quot;])
+    return jsonify({&quot;camera_id&quot;: cid, &quot;recording&quot;: True})
+
+
+@recordings_bp.post(&quot;/&lt;int:cid&gt;/stop&quot;)
+def stop(cid):
+    recording_service.stop_recording(cid)
+    return jsonify({&quot;camera_id&quot;: cid, &quot;recording&quot;: False})
+
+
+@recordings_bp.get(&quot;&quot;)
+@recordings_bp.get(&quot;/&quot;)
+def list_recordings():
+    cfg = current_app.config
+    cid = request.args.get(&quot;camera_id&quot;, type=int)
+    if cid:                      # 디스크 새 파일을 DB에 반영 후 조회
+        recording_service.scan_and_register(cid, cfg[&quot;REC_DIR&quot;], cfg[&quot;REC_SEGMENT_TIME&quot;])
+    return jsonify({&quot;recordings&quot;: db.list_recordings(cid, request.args.get(&quot;from&quot;),
+                                                     request.args.get(&quot;to&quot;))})
+
+
+@recordings_bp.get(&quot;/file/&lt;int:cid&gt;/&lt;path:fname&gt;&quot;)
+def serve(cid, fname):
+    return send_from_directory(os.path.join(current_app.config[&quot;REC_DIR&quot;], str(cid)), fname)</code></pre></section><section><h2><span class="sid">STEP 4</span> AI 객체 검출 <span class="sl">📊 슬라이드 23</span></h2><p class="what">프레임 샘플링 → YOLO 검출 → 저장(백그라운드)</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “프레임을 샘플링해 YOLO로 검출하고 저장하는 백그라운드 detection_service와 /api/detection을 만들어줘”</div><div class="fn">app/services/detection_service.py</div><pre><code>&quot;&quot;&quot;객체 검출 — 카메라별 백그라운드 스레드에서 YOLO 실행 → 검출 저장 + 이벤트 체크.&quot;&quot;&quot;
+import os
+import threading
+
+import cv2
+
+from .. import db
+from . import event_service
+
+_model = None
+_threads = {}   # camera_id -&gt; Thread
+_stop = {}      # camera_id -&gt; bool
+
+
+def _get_model(cfg):
+    global _model
+    if _model is None:
+        from ultralytics import YOLO
+        _model = YOLO(cfg[&quot;DETECTOR_WEIGHTS&quot;])
+    return _model
+
+
+def start(camera_id, source, cfg):
+    cid = str(camera_id)
+    if _threads.get(cid) and _threads[cid].is_alive():
+        return
+    _stop[cid] = False
+    t = threading.Thread(target=_loop, args=(camera_id, source, dict(cfg)), daemon=True)
+    _threads[cid] = t
+    t.start()
+
+
+def stop(camera_id):
+    _stop[str(camera_id)] = True
+
+
+def is_running(camera_id):
+    t = _threads.get(str(camera_id))
+    return bool(t and t.is_alive())
+
+
+def _loop(camera_id, source, cfg):
+    cid = str(camera_id)
+    model = _get_model(cfg)
+    snap_dir = os.path.join(cfg[&quot;HLS_DIR&quot;], &quot;_snapshots&quot;)
+    cap = cv2.VideoCapture(source)
+    skip, idx = cfg[&quot;FRAME_SKIP&quot;], 0
+    while not _stop.get(cid):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        idx += 1
+        if idx % skip:
+            continue
+        r = model.predict(frame, classes=cfg[&quot;DETECT_CLASSES&quot;],
+                          conf=cfg[&quot;DETECT_CONF&quot;], device=cfg[&quot;DEVICE&quot;], verbose=False)[0]
+        for b in r.boxes:
+            label = model.names[int(b.cls[0])]
+            conf = round(float(b.conf[0]), 3)
+            x1, y1, x2, y2 = (int(v) for v in b.xyxy[0])
+            db.insert_detection(camera_id, label, conf, [x1, y1, x2, y2])
+            event_service.check(camera_id, label, conf, frame, snap_dir)
+    cap.release()
+
+
+def run_once(camera_id, source, cfg, max_frames=40):
+    &quot;&quot;&quot;동기 1회 분석(데모/테스트용) — 검출·이벤트 수 반환.&quot;&quot;&quot;
+    model = _get_model(cfg)
+    snap_dir = os.path.join(cfg[&quot;HLS_DIR&quot;], &quot;_snapshots&quot;)
+    cap = cv2.VideoCapture(source)
+    skip, idx, n_det, n_evt = cfg[&quot;FRAME_SKIP&quot;], 0, 0, 0
+    while idx &lt; max_frames * skip:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        idx += 1
+        if idx % skip:
+            continue
+        r = model.predict(frame, classes=cfg[&quot;DETECT_CLASSES&quot;],
+                          conf=cfg[&quot;DETECT_CONF&quot;], device=cfg[&quot;DEVICE&quot;], verbose=False)[0]
+        for b in r.boxes:
+            label = model.names[int(b.cls[0])]
+            conf = round(float(b.conf[0]), 3)
+            x1, y1, x2, y2 = (int(v) for v in b.xyxy[0])
+            db.insert_detection(camera_id, label, conf, [x1, y1, x2, y2])
+            n_det += 1
+            n_evt += event_service.check(camera_id, label, conf, frame, snap_dir)
+    cap.release()
+    return {&quot;detections&quot;: n_det, &quot;events&quot;: n_evt}</code></pre><div class="fn">app/routes/detection.py</div><pre><code>&quot;&quot;&quot;객체 검출 라우터 — 카메라별 검출 시작/중지/조회.&quot;&quot;&quot;
+from flask import Blueprint, current_app, jsonify
+
+from .. import db
+from ..services import detection_service
+
+detection_bp = Blueprint(&quot;detection&quot;, __name__)
+
+
+@detection_bp.post(&quot;/&lt;int:cid&gt;/start&quot;)
+def start(cid):
+    cam = db.get_camera(cid)
+    if not cam:
+        return jsonify({&quot;error&quot;: &quot;카메라 없음&quot;}), 404
+    detection_service.start(cid, cam[&quot;rtsp_url&quot;], current_app.config)
+    return jsonify({&quot;camera_id&quot;: cid, &quot;detecting&quot;: True})
+
+
+@detection_bp.post(&quot;/&lt;int:cid&gt;/stop&quot;)
+def stop(cid):
+    detection_service.stop(cid)
+    return jsonify({&quot;camera_id&quot;: cid, &quot;detecting&quot;: False})
+
+
+@detection_bp.get(&quot;/&lt;int:cid&gt;/recent&quot;)
+def recent(cid):
+    return jsonify({&quot;data&quot;: db.recent_detections(cid)})</code></pre></section><section><h2><span class="sid">STEP 5</span> 이벤트 트리거 <span class="sl">📊 슬라이드 24</span></h2><p class="what">검출이 규칙에 맞으면 쿨다운 적용 이벤트+스냅샷</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “검출이 규칙에 맞으면 쿨다운 적용해 이벤트·스냅샷을 만드는 event_service와 /api/events를 만들어줘”</div><div class="fn">app/services/event_service.py</div><pre><code>&quot;&quot;&quot;이벤트 트리거 — 검출이 규칙에 맞으면 이벤트 생성(+쿨다운, 스냅샷).&quot;&quot;&quot;
+import os
+import time
+
+import cv2
+
+from .. import db
+
+_last = {}   # (camera_id, rule_id) -&gt; 마지막 발생 시각
+
+
+def check(camera_id, label, confidence, frame, snap_dir):
+    &quot;&quot;&quot;검출 1건을 규칙들과 대조해 트리거. 발생한 이벤트 수 반환.&quot;&quot;&quot;
+    fired = 0
+    for rule in db.get_rules(camera_id):
+        if rule[&quot;object&quot;] != label:
+            continue
+        if confidence &lt; rule[&quot;min_confidence&quot;]:
+            continue
+        key = (camera_id, rule[&quot;rule_id&quot;])
+        if time.time() - _last.get(key, 0) &lt; rule[&quot;cooldown_sec&quot;]:
+            continue          # 쿨다운 — 중복 이벤트 억제
+        _last[key] = time.time()
+        snap = _save_snapshot(frame, camera_id, snap_dir)
+        db.insert_event(camera_id, rule[&quot;rule_id&quot;], label, confidence, snap)
+        fired += 1
+        # 실무: 여기서 웹훅/메신저 알림 호출
+    return fired
+
+
+def _save_snapshot(frame, camera_id, snap_dir):
+    if frame is None:
+        return None
+    os.makedirs(snap_dir, exist_ok=True)
+    name = f&quot;evt_{camera_id}_{int(time.time()*1000)}.jpg&quot;
+    cv2.imwrite(os.path.join(snap_dir, name), frame)
+    return f&quot;/static/hls/_snapshots/{name}&quot;</code></pre><div class="fn">app/routes/events.py</div><pre><code>&quot;&quot;&quot;이벤트 라우터 — 규칙 관리 + 이벤트 조회/확인.&quot;&quot;&quot;
+from flask import Blueprint, jsonify, request
+
+from .. import db
+
+events_bp = Blueprint(&quot;events&quot;, __name__)
+
+
+@events_bp.get(&quot;/rules&quot;)
+def list_rules():
+    return jsonify({&quot;rules&quot;: db.all_rules()})
+
+
+@events_bp.post(&quot;/rules&quot;)
+def add_rule():
+    b = request.get_json(silent=True) or {}
+    if not b.get(&quot;camera_id&quot;) or not b.get(&quot;object&quot;):
+        return jsonify({&quot;error&quot;: &quot;camera_id, object 필요&quot;}), 400
+    rid = db.add_rule(b[&quot;camera_id&quot;], b[&quot;object&quot;],
+                      float(b.get(&quot;min_confidence&quot;, 0.5)),
+                      int(b.get(&quot;cooldown_sec&quot;, 30)))
+    return jsonify({&quot;rule_id&quot;: rid}), 201
+
+
+@events_bp.get(&quot;&quot;)
+@events_bp.get(&quot;/&quot;)
+def list_events():
+    cam = request.args.get(&quot;camera_id&quot;, type=int)
+    return jsonify({&quot;events&quot;: db.list_events(camera_id=cam)})
+
+
+@events_bp.post(&quot;/&lt;int:eid&gt;/ack&quot;)
+def ack(eid):
+    db.ack_event(eid)
+    return jsonify({&quot;event_id&quot;: eid, &quot;acked&quot;: True})</code></pre></section><section><h2><span class="sid">STEP 6</span> 웹 대시보드 <span class="sl">📊 슬라이드 25</span></h2><p class="what">화면정의서 SCR-01대로 hls.js 라이브 + 이벤트 패널</p><div class="vibe">🤖 <b>바이브 코딩 지시 예</b> — “SCR-01대로 hls.js로 라이브를 띄우고 이벤트를 3초마다 폴링하는 dashboard.html을 만들어줘”</div><div class="fn">app/routes/web.py</div><pre><code>&quot;&quot;&quot;웹 프론트(관제 대시보드) 라우터.&quot;&quot;&quot;
+from flask import Blueprint, render_template
+
+web_bp = Blueprint(&quot;web&quot;, __name__)
+
+
+@web_bp.get(&quot;/&quot;)
+def dashboard():
+    return render_template(&quot;dashboard.html&quot;)</code></pre><div class="fn">templates/dashboard.html</div><pre><code>&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;ko&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;UTF-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1.0&quot;&gt;
+&lt;title&gt;🎥 VMS 관제 대시보드&lt;/title&gt;
+&lt;script src=&quot;https://cdn.jsdelivr.net/npm/hls.js@1&quot;&gt;&lt;/script&gt;
+&lt;style&gt;
+  :root{--green:#2e7d32;--green-d:#1b5e20;--bg:#10140f;--panel:#1b2118;--line:#2e3a28;--muted:#8aa090;--warn:#ff5d5d;--ok:#5fd07a;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:#e8f0e6;font-family:&quot;Pretendard&quot;,&quot;Apple SD Gothic Neo&quot;,&quot;Malgun Gothic&quot;,system-ui,sans-serif;}
+  header{background:linear-gradient(135deg,var(--green-d),var(--green));padding:14px 22px;display:flex;justify-content:space-between;align-items:center;}
+  header h1{font-size:19px;} header .add{display:flex;gap:8px;}
+  header input{background:#0d120c;border:1px solid var(--line);color:#e8f0e6;border-radius:8px;padding:7px 10px;font-size:13px;}
+  header button{background:#fff;color:var(--green-d);border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer;font-size:13px;}
+  .wrap{display:grid;grid-template-columns:1fr 320px;gap:14px;padding:14px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-content:start;}
+  .cam{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+  .cam .vid{position:relative;aspect-ratio:16/9;background:#000;}
+  .cam video{width:100%;height:100%;object-fit:cover;display:block;}
+  .cam .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#56684f;font-size:13px;}
+  .cam .bar{display:flex;align-items:center;gap:8px;padding:9px 12px;}
+  .cam .nm{font-weight:700;font-size:14px;flex:1;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#566;}
+  .dot.on{background:var(--ok);}
+  .cam .btns{display:flex;gap:6px;padding:0 12px 11px;}
+  .cam .btns button{flex:1;background:#0d120c;border:1px solid var(--line);color:#cfe0c8;border-radius:7px;padding:7px;font-size:12px;font-weight:600;cursor:pointer;}
+  .cam .btns button.act{background:var(--green);color:#fff;border-color:var(--green);}
+  aside{background:var(--panel);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;max-height:calc(100vh - 92px);}
+  aside h2{font-size:15px;padding:13px 15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;}
+  aside .badge{background:var(--warn);color:#fff;border-radius:999px;font-size:12px;padding:1px 9px;}
+  .events{overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px;}
+  .evt{background:#0d120c;border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:9px 11px;}
+  .evt .t{font-size:13px;font-weight:700;} .evt .m{font-size:11px;color:var(--muted);margin-top:2px;}
+  .evt.acked{opacity:.5;border-left-color:#566;}
+  .evt button{margin-top:6px;background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:11px;padding:3px 9px;cursor:pointer;}
+  .empty{color:var(--muted);text-align:center;padding:30px;font-size:13px;}
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;header&gt;
+  &lt;h1&gt;🎥 VMS 관제 대시보드&lt;/h1&gt;
+  &lt;div class=&quot;add&quot;&gt;
+    &lt;input id=&quot;cname&quot; placeholder=&quot;카메라 이름&quot;&gt;
+    &lt;input id=&quot;curl&quot; placeholder=&quot;rtsp://... (또는 영상 파일 경로)&quot; style=&quot;width:260px&quot;&gt;
+    &lt;button onclick=&quot;addCam()&quot;&gt;+ 카메라 추가&lt;/button&gt;
+  &lt;/div&gt;
+&lt;/header&gt;
+&lt;div class=&quot;wrap&quot;&gt;
+  &lt;div class=&quot;grid&quot; id=&quot;grid&quot;&gt;&lt;/div&gt;
+  &lt;aside&gt;
+    &lt;h2&gt;⚡ 이벤트 &lt;span class=&quot;badge&quot; id=&quot;evtcount&quot;&gt;0&lt;/span&gt;&lt;/h2&gt;
+    &lt;div class=&quot;events&quot; id=&quot;events&quot;&gt;&lt;div class=&quot;empty&quot;&gt;이벤트 없음&lt;/div&gt;&lt;/div&gt;
+  &lt;/aside&gt;
+&lt;/div&gt;
+
+&lt;script&gt;
+const hlsMap = {};
+async function api(url, opt){ const r=await fetch(url,opt); return r.json(); }
+
+async function loadCams(){
+  const {cameras} = await api(&#x27;/api/cameras&#x27;);
+  const g = document.getElementById(&#x27;grid&#x27;);
+  if(!cameras.length){ g.innerHTML=&#x27;&lt;div class=&quot;empty&quot;&gt;카메라를 추가하세요&lt;/div&gt;&#x27;; return; }
+  g.innerHTML = cameras.map(c=&gt;`
+    &lt;div class=&quot;cam&quot; id=&quot;cam${c.camera_id}&quot;&gt;
+      &lt;div class=&quot;vid&quot;&gt;&lt;video id=&quot;v${c.camera_id}&quot; muted&gt;&lt;/video&gt;&lt;div class=&quot;ph&quot; id=&quot;ph${c.camera_id}&quot;&gt;⏹ 스트림 중지됨&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;bar&quot;&gt;&lt;span class=&quot;dot ${c.status===&#x27;online&#x27;?&#x27;on&#x27;:&#x27;&#x27;}&quot; id=&quot;dot${c.camera_id}&quot;&gt;&lt;/span&gt;&lt;span class=&quot;nm&quot;&gt;${c.name}&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;btns&quot;&gt;
+        &lt;button onclick=&quot;startStream(${c.camera_id})&quot;&gt;▶ 스트림&lt;/button&gt;
+        &lt;button onclick=&quot;startDetect(${c.camera_id})&quot;&gt;🔍 검출&lt;/button&gt;
+        &lt;button onclick=&quot;addRule(${c.camera_id})&quot;&gt;⚡ 규칙&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;`).join(&#x27;&#x27;);
+}
+async function addCam(){
+  const name=cname.value.trim(), url=curl.value.trim();
+  if(!name||!url){ alert(&#x27;이름·URL 입력&#x27;); return; }
+  await api(&#x27;/api/cameras&#x27;,{method:&#x27;POST&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({name,rtsp_url:url})});
+  cname.value=curl.value=&#x27;&#x27;; loadCams();
+}
+async function startStream(id){
+  const {hls_url}=await api(`/api/stream/${id}/start`,{method:&#x27;POST&#x27;});
+  document.getElementById(&#x27;ph&#x27;+id).style.display=&#x27;none&#x27;;
+  document.getElementById(&#x27;dot&#x27;+id).classList.add(&#x27;on&#x27;);
+  const v=document.getElementById(&#x27;v&#x27;+id);
+  // HLS 세그먼트 생성까지 잠깐 대기 후 로드
+  setTimeout(()=&gt;{
+    if(Hls.isSupported()){ const h=new Hls(); hlsMap[id]=h; h.loadSource(hls_url); h.attachMedia(v); h.on(Hls.Events.MANIFEST_PARSED,()=&gt;v.play()); }
+    else { v.src=hls_url; v.play(); }
+  }, 3500);
+}
+async function startDetect(id){
+  await api(`/api/detection/${id}/start`,{method:&#x27;POST&#x27;});
+  alert(&#x27;객체 검출 시작 — 검출이 규칙에 맞으면 이벤트가 발생합니다.&#x27;);
+}
+async function addRule(id){
+  const obj=prompt(&#x27;이벤트 트리거 대상 객체 (예: person, car)&#x27;,&#x27;person&#x27;);
+  if(!obj) return;
+  await api(&#x27;/api/events/rules&#x27;,{method:&#x27;POST&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({camera_id:id,object:obj,min_confidence:0.5,cooldown_sec:15})});
+  alert(`규칙 추가: ${obj} 감지 시 이벤트`);
+}
+async function loadEvents(){
+  const {events}=await api(&#x27;/api/events&#x27;);
+  document.getElementById(&#x27;evtcount&#x27;).textContent=events.filter(e=&gt;!e.acked).length;
+  const el=document.getElementById(&#x27;events&#x27;);
+  if(!events.length){ el.innerHTML=&#x27;&lt;div class=&quot;empty&quot;&gt;이벤트 없음&lt;/div&gt;&#x27;; return; }
+  el.innerHTML=events.map(e=&gt;`
+    &lt;div class=&quot;evt ${e.acked?&#x27;acked&#x27;:&#x27;&#x27;}&quot;&gt;
+      &lt;div class=&quot;t&quot;&gt;⚠️ ${e.label} &lt;span style=&quot;color:#8aa090;font-weight:400&quot;&gt;(cam ${e.camera_id})&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;m&quot;&gt;${e.ts.replace(&#x27;T&#x27;,&#x27; &#x27;)} · conf ${e.confidence??&#x27;-&#x27;}&lt;/div&gt;
+      ${e.acked?&#x27;&#x27;:`&lt;button onclick=&quot;ackEvt(${e.event_id})&quot;&gt;확인&lt;/button&gt;`}
+    &lt;/div&gt;`).join(&#x27;&#x27;);
+}
+async function ackEvt(id){ await api(`/api/events/${id}/ack`,{method:&#x27;POST&#x27;}); loadEvents(); }
+
+loadCams(); loadEvents();
+setInterval(loadEvents, 3000);
+&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre></section><section><h2><span class="sid">STEP 7</span> 단계별 검증 <span class="sl">📊 슬라이드 26</span></h2><p class="what">API 통과는 당연 — <b>영상이 진짜 만들어지나 / AI가 진짜 도나</b>를 <code>VMS_실습.ipynb</code>로 직접 확인(ffprobe HLS · YOLO 박스 · 검출→이벤트).</p></section></div></body></html>
