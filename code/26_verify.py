@@ -19,7 +19,7 @@ import time
 import glob
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE = os.path.normpath(os.path.join(HERE, "..", "..", "vms", "samples", "sample.mp4"))
+SAMPLE = os.path.normpath(os.path.join(HERE, "..", "vms", "samples", "sample.mp4"))
 WORK = os.path.join(HERE, "_verify_out")
 
 

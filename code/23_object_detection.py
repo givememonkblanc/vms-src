@@ -23,7 +23,7 @@ import cv2
 from ultralytics import YOLO
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE = os.path.join(HERE, "..", "..", "vms", "samples", "sample.mp4")
+SAMPLE = os.path.join(HERE, "..", "vms", "samples", "sample.mp4")
 
 
 class Detector:

@@ -26,7 +26,7 @@ import time
 import glob
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE = os.path.join(HERE, "..", "..", "vms", "samples", "sample.mp4")  # 카메라 대신
+SAMPLE = os.path.join(HERE, "..", "vms", "samples", "sample.mp4")  # 카메라 대신
 
 # 카메라별 ffmpeg 프로세스를 관리 (시작/중지)
 _procs = {}

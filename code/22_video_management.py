@@ -25,7 +25,7 @@ import glob
 from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE = os.path.join(HERE, "..", "..", "vms", "samples", "sample.mp4")
+SAMPLE = os.path.join(HERE, "..", "vms", "samples", "sample.mp4")
 DB = os.path.join(HERE, "vms_demo.db")
 _NAME = re.compile(r"(\d{8})_(\d{6})\.mp4$")   # 파일명 → 시각 파싱
 
